@@ -1,3 +1,9 @@
+// HTTP 서버: 정적 화면 제공 + 로그인/조회 API.
+//   POST /api/login, /api/logout   세션 쿠키 발급·삭제 (로그인 필요 없음)
+//   GET  /api/overview             최신 샘플 + 최근 이력 (로그인 필요)
+//   GET  /api/logs?id=&n=          서비스 로그 (로그인 필요)
+// 수집은 요청과 무관하게 주기적으로 돌며 결과를 캐시해 두고, API 는 캐시만 돌려준다
+// → 접속자가 많아도 systemctl 호출 횟수는 늘지 않는다.
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -6,12 +12,19 @@ import { makeAuth, makeLimiter } from './auth.js';
 import { createHistory } from './history.js';
 
 const COOKIE = 'sm_session';
+
+// 제공할 정적 파일 허용 목록(요청 경로 → [public/ 안의 파일, Content-Type]).
+// 경로를 파일 시스템에 그대로 붙이지 않고 이 표로만 찾으므로 "../" 같은 경로 조작이 통하지 않는다.
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
 };
+// 모든 응답에 붙는 보안 헤더.
+//   CSP        같은 출처의 스크립트/스타일만 허용(주입된 스크립트 차단), iframe 삽입 금지(frame-ancestors)
+//   nosniff    브라우저가 Content-Type 을 멋대로 추측하지 못하게 함
+//   no-referrer / no-store   주소 유출 방지, 로그·상태 데이터가 캐시에 남지 않게 함
 const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'x-content-type-options': 'nosniff',
@@ -19,6 +32,7 @@ const SECURITY_HEADERS = {
   'cache-control': 'no-store',
 };
 
+// "a=1; b=2" 형태의 Cookie 헤더를 객체로 파싱
 function parseCookies(header = '') {
   const out = {};
   for (const part of header.split(';')) {
@@ -28,6 +42,7 @@ function parseCookies(header = '') {
   return out;
 }
 
+// 요청 본문을 JSON 으로 읽는다. limit(바이트)을 넘으면 연결을 끊는다(로그인 본문은 작아서 1KB 면 충분).
 function readJson(req, limit = 1024) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
@@ -41,14 +56,18 @@ function readJson(req, limit = 1024) {
   });
 }
 
+// 앱을 만든다. 반환: { server, tick, startSampling, stop }
+//   tick()          샘플 1회 수집(테스트에서 직접 호출)
+//   startSampling() intervalMs 주기로 계속 수집
 export function createApp({ config, collector }) {
   const auth = makeAuth({ password: config.password, secret: config.secret });
   const limiter = makeLimiter();
   const history = createHistory(config.services.map((s) => s.id));
   const publicDir = path.join(config.root, 'public');
-  let latest = null;
+  let latest = null; // 가장 최근 샘플(API 가 이것만 돌려준다)
   let timer = null;
 
+  // 샘플 1회 수집. 실패해도 서버가 죽지 않고 이전 값을 유지한다.
   async function tick() {
     try {
       latest = await collector.sample();
@@ -58,6 +77,7 @@ export function createApp({ config, collector }) {
     }
   }
 
+  // 응답 보내기. body 가 객체면 JSON 으로, 아니면 그대로(파일 내용 등). 보안 헤더는 항상 붙는다.
   const send = (res, status, body, headers = {}) => {
     const isObj = typeof body === 'object' && body !== null && !Buffer.isBuffer(body);
     res.writeHead(status, {
@@ -68,18 +88,25 @@ export function createApp({ config, collector }) {
     res.end(isObj ? JSON.stringify(body) : body);
   };
 
+  // 로그인 잠금에 쓰는 접속자 IP. 프록시를 신뢰하는 설정(trustProxy)일 때만 X-Forwarded-For 를 본다.
+  // (직접 노출 상태에서 이 헤더를 믿으면 접속자가 IP 를 위조해 잠금을 피할 수 있다.
+  //  nginx 는 이 헤더를 $remote_addr 로 "덮어써서" 넘기도록 설정해야 한다.)
   const clientIp = (req) => (config.trustProxy
     ? (req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || req.socket.remoteAddress
     : req.socket.remoteAddress);
 
+  // 세션 쿠키: HttpOnly(스크립트에서 못 읽음), SameSite=Strict(다른 사이트가 보낸 요청에는 안 실림),
+  // HTTPS 로 들어온 요청이면 Secure(평문 전송 금지). maxAgeSec=0 이면 삭제.
   const isHttps = (req) => config.trustProxy && req.headers['x-forwarded-proto'] === 'https';
   const sessionCookie = (req, value, maxAgeSec) => [
     `${COOKIE}=${encodeURIComponent(value)}`, 'HttpOnly', 'SameSite=Strict', 'Path=/', `Max-Age=${maxAgeSec}`,
     ...(isHttps(req) ? ['Secure'] : []),
   ].join('; ');
 
+  // 쿠키의 서명·만료를 검증해 로그인된 요청인지 판단
   const authed = (req) => auth.verify(parseCookies(req.headers.cookie)[COOKIE]);
 
+  // 요청 라우팅. 순서: 정적 파일 → 로그인/로그아웃(인증 불필요) → 나머지 /api/*(인증 필수) → 404
   async function handle(req, res) {
     const url = new URL(req.url, 'http://x');
     const route = `${req.method} ${url.pathname}`;
@@ -89,6 +116,8 @@ export function createApp({ config, collector }) {
       return send(res, 200, fs.readFileSync(path.join(publicDir, file)), { 'content-type': type });
     }
 
+    // 로그인: 잠긴 IP 는 비밀번호 확인 전에 429 로 거절(맞는 비밀번호도 잠금 동안은 거부),
+    // 틀리면 실패 횟수 기록, 맞으면 기록을 지우고 서명된 세션 쿠키 발급
     if (route === 'POST /api/login') {
       const ip = clientIp(req);
       const wait = limiter.blockedFor(ip);
@@ -107,9 +136,11 @@ export function createApp({ config, collector }) {
       return send(res, 200, { ok: true }, { 'set-cookie': sessionCookie(req, '', 0) });
     }
 
+    // 여기부터의 모든 API 는 로그인 필수. 새 API 를 추가하면 자동으로 이 보호를 받는다.
     if (url.pathname.startsWith('/api/')) {
       if (!authed(req)) return send(res, 401, { error: '로그인이 필요합니다' });
 
+      // 화면이 주기적으로 부르는 API: 최신 스냅샷 + 차트용 이력(컬럼 배열). 첫 수집 전이면 503.
       if (route === 'GET /api/overview') {
         if (!latest) return send(res, 503, { error: '수집 중입니다' });
         return send(res, 200, {
@@ -128,6 +159,7 @@ export function createApp({ config, collector }) {
     return send(res, 404, { error: 'not found' });
   }
 
+  // 처리 중 예외가 나도 프로세스가 죽지 않게 여기서 500 으로 변환한다.
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
       console.error('요청 처리 오류:', err);
@@ -138,6 +170,8 @@ export function createApp({ config, collector }) {
   return {
     server,
     tick,
+    // setInterval 대신 "끝난 뒤 다음 예약"으로 돌려, 수집이 느려져도 샘플이 겹쳐 쌓이지 않는다.
+    // unref: 이 타이머만 남았을 때 프로세스 종료를 막지 않음(테스트가 끝나도록).
     startSampling() {
       const loop = async () => { await tick(); timer = setTimeout(loop, config.intervalMs); timer.unref?.(); };
       return loop();

@@ -5,7 +5,19 @@ import net from 'node:net';
 import os from 'node:os';
 import { promisify } from 'node:util';
 
+// 서버 상태 수집. 세 부분으로 나뉜다.
+//   1) 순수 함수  : 출력 파싱·상태 판정 (외부 호출 없음 → 단위 테스트 대상)
+//   2) 외부 호출  : systemctl, TCP/HTTP 점검, 파일 tail
+//   3) createCollector : 위를 묶어 sample()(전체 스냅샷)과 readLog()(로그) 를 제공
+// 모든 외부 명령은 execFile(셸 미사용)로 부르고, 인자는 검증된 설정 값만 사용한다.
 const run = promisify(execFile);
+
+// `systemctl show -p` 로 요청할 속성. 각각의 의미:
+//   LoadState  유닛 파일을 찾았는지(not-found 면 등록 안 된 유닛)
+//   ActiveState/SubState  active·failed·inactive / running·dead 등
+//   MainPID  주 프로세스 PID        MemoryCurrent  cgroup 전체 메모리(자식 프로세스 포함, 바이트)
+//   CPUUsageNSec  누적 CPU 시간(나노초) — 두 샘플의 차이로 사용률을 구한다
+//   NRestarts  자동 재시작 횟수     Result  마지막 종료 결과     ActiveEnterTimestamp  마지막 시작 시각
 const PROPS = 'Id,LoadState,ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,NRestarts,Result,ActiveEnterTimestamp';
 
 // ---- 순수 함수(테스트 대상) -------------------------------------------------
@@ -52,6 +64,7 @@ export function parseDf(text) {
   }).filter((d) => d.mount && d.total > 0);
 }
 
+// 두 시점의 누적 CPU 시간(a→b)으로 그 사이의 전체 CPU 사용률(0~100)을 구한다. 첫 샘플은 직전 값이 없어 부정확할 수 있다.
 export function cpuPercent(a, b) {
   const dt = b.total - a.total;
   if (dt <= 0) return 0;
@@ -59,6 +72,11 @@ export function cpuPercent(a, b) {
 }
 
 // 서비스 한 줄의 종합 상태: ok | warn | down | unknown
+//   unknown  유닛이 등록되어 있지 않음(이름 오타나 미설치)
+//   warn     시작/재로드 중이거나, 켜져 있는데 포트·HTTP 점검이 실패
+//   down     active 가 아님(failed/inactive 등)
+//   ok       위에 해당하지 않음
+// 판정 순서가 곧 우선순위다: 유닛이 없으면 다른 값은 의미가 없으므로 가장 먼저 본다.
 export function judge(svc) {
   if (svc.load === 'not-found') return 'unknown';
   if (svc.active === 'activating' || svc.active === 'reloading') return 'warn';
@@ -72,6 +90,9 @@ export function judge(svc) {
 
 // ---- 외부 호출 ----------------------------------------------------------------
 
+// 같은 scope 의 유닛들을 systemctl 한 번 호출로 가져온다(유닛마다 부르면 프로세스 생성 비용이 커진다).
+// exec 를 주입받는 이유: 테스트에서 실제 systemctl 없이 출력만 흉내낼 수 있게 하려는 것.
+// 반환: Map<유닛이름, 속성 객체>
 export async function systemctlShow(scope, units, exec = run) {
   const base = scope === 'user' ? ['--user'] : [];
   const args = (ts) => [...base, ...(ts ? ['--timestamp=unix'] : []), 'show', '-p', PROPS, ...units];
@@ -85,6 +106,7 @@ export async function systemctlShow(scope, units, exec = run) {
   return new Map(parseShow(out).map((o) => [o.Id, o]));
 }
 
+// 로컬 포트에 TCP 연결이 되는지만 본다(프로세스는 떠 있는데 포트를 못 여는 경우를 잡는다).
 function tcpCheck(port, timeout = 1000) {
   return new Promise((resolve) => {
     const s = net.connect({ host: '127.0.0.1', port });
@@ -95,6 +117,8 @@ function tcpCheck(port, timeout = 1000) {
   });
 }
 
+// 로컬 포트에 GET 을 보내 상태 코드와 응답 시간(ms)을 잰다. status 0 은 무응답/타임아웃.
+// 응답 헤더만 받고 바로 끊는다 — 큰 페이지를 매번 내려받지 않기 위해.
 function httpCheck(port, path, timeout = 2000) {
   return new Promise((resolve) => {
     const t0 = performance.now();
@@ -109,6 +133,7 @@ function httpCheck(port, path, timeout = 2000) {
   });
 }
 
+// 파일의 마지막 n 줄. 큰 로그를 통째로 읽지 않도록 끝에서 maxBytes 만 읽는다.
 async function tailFile(file, n, maxBytes = 256 * 1024) {
   const fh = await fs.open(file, 'r');
   try {
@@ -127,6 +152,8 @@ async function tailFile(file, n, maxBytes = 256 * 1024) {
 
 // ---- 수집기 ---------------------------------------------------------------------
 
+// 수집기를 만든다. CPU 사용률은 "이전 샘플과의 차이"로 구하므로 이전 값을 클로저에 들고 있다.
+// 그래서 sample() 을 일정 주기로 계속 불러줘야 의미 있는 값이 나온다(server.js 의 샘플링 루프가 담당).
 export function createCollector(config, { exec = run } = {}) {
   const readCpu = () => {
     let idle = 0; let total = 0;
@@ -134,8 +161,9 @@ export function createCollector(config, { exec = run } = {}) {
     return { idle, total };
   };
   let prevCpu = readCpu();
-  const prevSvc = new Map(); // id -> { ns, t }
+  const prevSvc = new Map(); // 서비스별 직전 누적 CPU: id -> { ns(나노초), t(측정 시각 ms) }
 
+  // 서버 전체: CPU·메모리·디스크·부하·가동 시간
   async function system() {
     const cur = readCpu();
     const cpu = cpuPercent(prevCpu, cur);
@@ -156,8 +184,10 @@ export function createCollector(config, { exec = run } = {}) {
     return { cpu, cores: os.cpus().length, load: os.loadavg(), uptime: os.uptime(), mem, disks };
   }
 
+  // 서비스별: systemd 상태 + 포트/HTTP 점검을 합쳐 한 줄씩 만든다.
   async function services() {
     const now = Date.now();
+    // user/system 은 systemctl 호출 방식이 달라서(--user) 두 번으로 나눠 부른다.
     const byScope = { user: [], system: [] };
     for (const s of config.services) byScope[s.scope].push(s.unit);
     const shown = new Map();
@@ -172,12 +202,15 @@ export function createCollector(config, { exec = run } = {}) {
 
     return Promise.all(config.services.map(async (cfg) => {
       const o = shown.get(`${cfg.scope}:${cfg.unit}`);
+      // CPU%: 직전 샘플 이후 늘어난 CPU 시간 ÷ 경과 시간. 코어 1개를 100% 로 본다(멀티스레드면 100 을 넘을 수 있음).
       const ns = num(o?.CPUUsageNSec);
       let cpu = null;
       const prev = prevSvc.get(cfg.id);
       if (ns != null && prev && now > prev.t) cpu = Math.max(0, (ns - prev.ns) / 1e6 / (now - prev.t) * 100);
       if (ns != null) prevSvc.set(cfg.id, { ns, t: now });
 
+      // 점검은 active 일 때만 한다(꺼진 서비스의 포트를 두드려도 의미가 없다).
+      // HTTP 는 TCP 가 통했을 때만 보낸다. null = 점검 대상 아님/건너뜀.
       const checks = { tcp: null, http: null };
       if (o?.ActiveState === 'active' && cfg.port != null) {
         checks.tcp = await tcpCheck(cfg.port);
@@ -207,11 +240,14 @@ export function createCollector(config, { exec = run } = {}) {
     }));
   }
 
+  // 서버 + 서비스 스냅샷 한 장. 두 수집은 서로 독립이라 동시에 실행한다.
   async function sample() {
     const [sys, svcs] = await Promise.all([system(), services()]);
     return { ts: Date.now(), system: sys, services: svcs };
   }
 
+  // 서비스 로그 마지막 n 줄(최대 500). logFile 이 지정된 서비스는 파일을, 아니면 journalctl 을 읽는다.
+  // id 는 services.json 에 있는 값만 허용(없으면 null → 404)하므로 임의 경로/유닛을 읽을 수 없다.
   async function readLog(id, n) {
     const cfg = config.services.find((s) => s.id === id);
     if (!cfg) return null;

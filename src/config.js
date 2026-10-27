@@ -1,15 +1,22 @@
+// 설정: 환경변수(SM_*, .env 참고)와 services.json(관리할 서비스 목록)을 읽어 검증한다.
+// 잘못된 설정은 여기서 시작 전에 예외로 막는다 — 이후 코드는 검증된 값만 받는다고 가정한다.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// 프로젝트 루트(public/, services.json 위치 기준)
 const ROOT = path.resolve(import.meta.dirname, '..');
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 // 유닛 이름은 execFile 인자로 들어가므로 '-' 로 시작(옵션 주입)하거나 특수문자를 가진 값은 거부한다.
 const UNIT_RE = /^[A-Za-z0-9][A-Za-z0-9@._-]*$/;
 
+// logFile 에 "~/..." 로 적은 경로를 실행 계정의 홈으로 풀어준다
 const expandHome = (p) => (p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p);
 
+// services.json 의 각 항목을 검증하고 기본값을 채워 정규화한다.
+//   id: 화면/API 식별자 · scope: user(systemctl --user)|system · unit: systemd 유닛 이름
+//   port: 있으면 TCP 점검 · http: 있으면 그 경로로 GET 점검(port 필요) · logFile: 있으면 journal 대신 파일 tail
 export function validateServices(list) {
   if (!Array.isArray(list) || list.length === 0) throw new Error('services 는 비어 있지 않은 배열이어야 합니다');
   const seen = new Set();
@@ -43,11 +50,13 @@ export function loadConfig(env = process.env) {
     root: ROOT,
     host: env.SM_HOST || '127.0.0.1',
     port: Number(env.SM_PORT || 3200),
-    demo: env.SM_DEMO === '1',
+    demo: env.SM_DEMO === '1', // 가짜 데이터로 UI 확인(맥 개발용)
     password: env.SM_PASSWORD || '',
+    // 세션 쿠키 서명 키. 지정하지 않으면 시작할 때마다 새로 만들어 재시작 시 모두 로그아웃된다.
     secret: env.SM_SECRET || crypto.randomBytes(32).toString('hex'),
+    // nginx 뒤에서만 1: X-Forwarded-For/Proto 를 믿는다. 직접 노출 상태에서 켜면 IP 위조가 가능하므로 금지.
     trustProxy: env.SM_TRUST_PROXY === '1',
-    intervalMs: Math.max(2000, Number(env.SM_INTERVAL_MS || 10000)),
+    intervalMs: Math.max(2000, Number(env.SM_INTERVAL_MS || 10000)), // 너무 짧게 잡아 systemctl 을 과하게 부르지 않도록 하한 2초
     disks: (env.SM_DISKS || '/').split(',').map((d) => d.trim()).filter(Boolean),
     services,
   };

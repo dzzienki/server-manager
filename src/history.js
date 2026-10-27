@@ -4,6 +4,7 @@ export function createHistory(ids, capacity = 360) {
   const svcMem = Object.fromEntries(ids.map((id) => [id, []]));
   const push = (arr, v) => { arr.push(v); if (arr.length > capacity) arr.shift(); };
   return {
+    // 샘플에서 차트에 필요한 값만 뽑아 쌓는다: 전체 CPU%, 메모리 사용률%, 서비스별 메모리(바이트).
     add(sample) {
       const { mem: m, cpu: c } = sample.system;
       push(t, sample.ts);

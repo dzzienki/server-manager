@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- 화면 구성: 상단 바 / 로그인 폼 / 대시보드(요약·타일·서비스 표) / 로그 창 / 툴팁.
+       내용은 app.js 가 채운다. 로그인 여부에 따라 login 과 dash 중 하나만 보인다(hidden 속성). -->
   <header class="top">
     <h1>서버 매니저</h1>
     <span id="host" class="host"></span>
@@ -28,7 +30,9 @@
 
     <section id="dash" hidden>
       <p id="demo-banner" class="banner" hidden>데모 모드 — 화면에 보이는 값은 가짜 데이터입니다.</p>
+      <!-- 서비스 상태 개수 요약. aria-live: 상태가 바뀌면 스크린리더가 읽어준다 -->
       <p id="summary" class="summary" aria-live="polite"></p>
+      <!-- 서버 전체 타일(CPU/메모리/디스크/가동 시간) -->
       <div id="tiles" class="tiles"></div>
 
       <h2 class="section">서비스</h2>
@@ -53,6 +57,7 @@
     </section>
   </main>
 
+  <!-- 로그 보기 창: 서비스 행의 [로그] 버튼이 연다. 로그는 <pre> 안에 텍스트로만 넣는다. -->
   <dialog id="log-dialog" class="log-dialog">
     <div class="log-head">
       <strong id="log-title"></strong>
@@ -66,6 +71,7 @@
     <pre id="log-body" class="log-body" tabindex="0"></pre>
   </dialog>
 
+  <!-- 차트에 마우스를 올렸을 때 값을 보여주는 공용 툴팁 -->
   <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
   <script type="module" src="app.js"></script>
 </body>

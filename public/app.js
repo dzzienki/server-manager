@@ -1,8 +1,15 @@
 // 서버에서 받은 값은 전부 텍스트 노드로만 넣는다(innerHTML 미사용) — 로그에 HTML 이 섞여 있어도 실행되지 않는다.
-const POLL_MS = 5000;
+// 화면 로직 (프레임워크 없는 바닐라 JS). 흐름:
+//   poll() 이 5초마다 /api/overview 를 불러 → renderTiles()/renderServices() 로 화면을 다시 그린다.
+//   401 이 오면 로그인 화면(showLogin)으로, 로그인에 성공하면 다시 poll() 한다.
+//   서비스 행의 [로그] 버튼은 openLog() 로 로그 창을 연다.
+// URL 은 "./api/..." 처럼 상대 경로를 쓴다 → /manager/ 같은 하위 경로 뒤에 둬도 그대로 동작한다.
+const POLL_MS = 5000; // 화면 갱신 주기. 서버 수집 주기(기본 10초)보다 짧아도 캐시를 받을 뿐이라 부담이 없다.
 const $ = (sel) => document.querySelector(sel);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+// DOM 생성 도우미: h('div', { class: 'x', onclick: fn }, 자식...) — 자식 문자열은 텍스트 노드로 들어간다.
+// innerHTML 을 쓰지 않으므로 서버가 준 값에 HTML 이 섞여 있어도 코드로 실행되지 않는다.
 function h(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -14,6 +21,7 @@ function h(tag, attrs = {}, ...kids) {
   for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid);
   return e;
 }
+// h() 의 SVG 버전. SVG 는 네임스페이스가 달라서 createElementNS 가 필요하다.
 function s(tag, attrs = {}) {
   const e = document.createElementNS(SVG_NS, tag);
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
@@ -21,6 +29,7 @@ function s(tag, attrs = {}) {
 }
 
 // ---- 포맷 ---------------------------------------------------------------------
+// ---- 포맷 도우미: 값이 없으면(null) 항상 '—' 로 표시 ----
 const GB = 2 ** 30; const MB = 2 ** 20;
 const fmtBytes = (n) => (n == null ? '—' : n >= GB ? `${(n / GB).toFixed(1)} GB` : n >= MB ? `${Math.round(n / MB)} MB` : `${Math.round(n / 1024)} KB`);
 const fmtPct = (n) => (n == null ? '—' : `${n < 10 ? n.toFixed(1) : Math.round(n)}%`);
@@ -33,18 +42,21 @@ function fmtDur(sec) {
 }
 const fmtTime = (ms) => new Date(ms).toLocaleTimeString('ko-KR', { hour12: false });
 
+// 상태 표시. 색(.ico.ok 등, style.css)만으로 구분하지 않도록 아이콘 글자와 한글 이름을 항상 같이 보여준다.
 const STATUS = {
   ok: { icon: '✓', text: '정상' },
   warn: { icon: '!', text: '경고' },
   down: { icon: '✕', text: '중지' },
   unknown: { icon: '?', text: '없음' },
 };
+// "● 정상" / "▲ 경고 · 설명" 형태의 상태 배지. detail 은 중지 사유 등 보충 설명.
 function badge(status, detail) {
   const st = STATUS[status] ?? STATUS.unknown;
   return h('span', { class: 'badge' }, h('span', { class: `ico ${status}`, 'aria-hidden': 'true' }, st.icon), detail ? `${st.text} · ${detail}` : st.text);
 }
 
 // ---- 툴팁 + 스파크라인 ------------------------------------------------------------
+// 툴팁은 페이지에 하나만 두고 모든 차트가 공유한다. 화면 밖으로 나가지 않게 위치를 보정한다.
 const tooltip = $('#tooltip');
 function showTip(x, y, lines) {
   tooltip.replaceChildren(...lines.map((l, i) => h(i ? 'div' : 'strong', {}, l)));
@@ -93,6 +105,7 @@ function spark({ values, times, fmt, label, w = 120, hgt = 30, minTop = 0, zero 
   return svg;
 }
 
+// 사용률 막대. 80% 이상 노랑, 90% 이상 빨강으로 바뀐다(숫자는 옆 텍스트로 항상 함께 표시).
 function meter(pct) {
   const level = pct >= 90 ? 'crit' : pct >= 80 ? 'warn' : '';
   const fill = h('i', { class: level });
@@ -101,6 +114,8 @@ function meter(pct) {
 }
 
 // ---- 렌더 ---------------------------------------------------------------------
+// 위쪽 서버 전체 타일 4개(CPU / 메모리 / 디스크 / 가동 시간)를 다시 그린다.
+// 메모리 사용량 = 전체 - "사용 가능(available)" (캐시로 쓰는 메모리는 사용 중으로 치지 않는다).
 function renderTiles(d) {
   const { system: sys, history: hist } = d;
   const used = sys.mem.total - sys.mem.available;
@@ -137,6 +152,8 @@ function renderTiles(d) {
   $('#tiles').replaceChildren(cpu, mem, disk, up);
 }
 
+// "점검" 열: 포트 열림 여부와 HTTP 응답. 문제가 있는 항목은 굵게(.bad) 표시한다.
+// 서버가 점검하지 않은 항목(꺼진 서비스 등)은 '—'.
 function checksCell(svc) {
   const c = svc.checks;
   const items = [];
@@ -152,6 +169,7 @@ function checksCell(svc) {
   return h('div', { class: 'checks' }, items);
 }
 
+// 요약 줄(정상 n개·경고 n개…)과 서비스 표를 다시 그린다. 개수가 0 인 상태는 요약에서 생략한다.
 function renderServices(d) {
   const { services, history: hist } = d;
   const counts = { ok: 0, warn: 0, down: 0, unknown: 0 };
@@ -177,7 +195,10 @@ function renderServices(d) {
 }
 
 // ---- API / 폴링 -----------------------------------------------------------------
+// 401(로그인 필요/세션 만료)을 일반 오류와 구분하기 위한 표시용 에러
 class AuthError extends Error {}
+// fetch 래퍼: 401 이면 AuthError, 그 외 실패는 서버가 준 error 메시지를 담은 Error 를 던진다.
+// (로그인 요청 자체의 401 은 "비밀번호 틀림" 이므로 AuthError 로 취급하지 않는다)
 async function api(path, opts) {
   const res = await fetch(path, { credentials: 'same-origin', ...opts });
   if (res.status === 401 && !path.endsWith('/login')) throw new AuthError();
@@ -187,11 +208,14 @@ async function api(path, opts) {
 }
 
 let pollTimer = null;
+// 로그인 화면으로 전환하고 갱신을 멈춘다.
 function showLogin() {
   clearTimeout(pollTimer);
   $('#dash').hidden = true; $('#login').hidden = false; $('#logout').hidden = true;
   $('#pw').focus();
 }
+// 데이터를 한 번 받아 화면을 그리고 다음 poll 을 예약한다. setInterval 이 아니라 "끝난 뒤 예약"이라 요청이 겹치지 않는다.
+// 실패(서버 재시작 중 등)해도 멈추지 않고 계속 재시도하며, 상단에 실패 사유만 표시한다.
 async function poll() {
   clearTimeout(pollTimer);
   try {
@@ -209,8 +233,10 @@ async function poll() {
   }
   pollTimer = setTimeout(poll, POLL_MS);
 }
+// 탭이 가려져 있는 동안은 갱신을 멈추고(서버 부하·배터리 절약), 다시 보이면 즉시 한 번 갱신한다.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('#dash').hidden) poll(); else if (document.hidden) clearTimeout(pollTimer); });
 
+// 로그인 제출: 성공하면 서버가 세션 쿠키를 심어주므로 바로 poll() 로 대시보드를 연다. 실패 사유(틀림/잠금)는 폼 아래에 표시.
 $('#login-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   $('#login-error').textContent = '';
@@ -225,8 +251,11 @@ $('#login-form').addEventListener('submit', async (ev) => {
 $('#logout').addEventListener('click', async () => { await api('./api/logout', { method: 'POST' }).catch(() => {}); showLogin(); });
 
 // ---- 로그 보기 ------------------------------------------------------------------
+// ---- 로그 보기 창 (<dialog>) ----
+// logSvc: 지금 보고 있는 서비스, logTimer: 자동 갱신(5초) 타이머. 창을 닫으면 둘 다 정리한다.
 const dlg = $('#log-dialog');
 let logSvc = null; let logTimer = null;
+// 로그를 불러와 표시한다. 사용자가 위로 스크롤해 읽는 중이면 새 로그가 와도 맨 아래로 끌어내리지 않는다.
 async function loadLog() {
   if (!logSvc) return;
   try {
@@ -242,6 +271,7 @@ async function loadLog() {
     $('#log-error').textContent = err.message;
   }
 }
+// "자동 갱신" 체크 상태에 따라 5초 뒤 loadLog 를 예약한다(창이 닫혀 있으면 예약하지 않음).
 function scheduleLog() {
   clearTimeout(logTimer);
   if (dlg.open && $('#log-auto').checked) logTimer = setTimeout(async () => { await loadLog(); scheduleLog(); }, 5000);
