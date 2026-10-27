@@ -66,6 +66,7 @@ export function createApp({ config, collector }) {
   const publicDir = path.join(config.root, 'public');
   let latest = null; // 가장 최근 샘플(API 가 이것만 돌려준다)
   let timer = null;
+  const busy = new Set(); // 제어 동작이 진행 중인 서비스 id (같은 서비스에 동작이 겹치지 않게 막는다)
 
   // 샘플 1회 수집. 실패해도 서버가 죽지 않고 이전 값을 유지한다.
   async function tick() {
@@ -105,6 +106,15 @@ export function createApp({ config, collector }) {
 
   // 쿠키의 서명·만료를 검증해 로그인된 요청인지 판단
   const authed = (req) => auth.verify(parseCookies(req.headers.cookie)[COOKIE]);
+
+  // CSRF 방어(쿠키의 SameSite=Strict 에 더한 두 번째 방어선): 브라우저가 Origin 을 보냈다면
+  // 이 서버의 Host 와 같아야 한다. 다른 사이트의 스크립트가 쿠키를 실어 보내는 요청을 거절한다.
+  // (nginx 는 Host 를 $host 로 넘기도록 설정되어 있어야 한다)
+  const sameOrigin = (req) => {
+    const origin = req.headers.origin;
+    if (!origin) return true; // 같은 출처의 일부 요청은 Origin 이 없다
+    try { return new URL(origin).host === req.headers.host; } catch { return false; }
+  };
 
   // 요청 라우팅. 순서: 정적 파일 → 로그인/로그아웃(인증 불필요) → 나머지 /api/*(인증 필수) → 404
   async function handle(req, res) {
@@ -147,6 +157,29 @@ export function createApp({ config, collector }) {
           host: os.hostname(), demo: config.demo, intervalMs: config.intervalMs,
           ts: latest.ts, system: latest.system, services: latest.services, history: history.toJSON(),
         });
+      }
+
+      // 서비스 제어: body { id, action }. 검사 순서 — 출처(CSRF) → JSON 형식 → 동작 중복 → 허용 목록(수집기) → 실행.
+      // 허용 여부는 services.json 의 actions 가 결정하고, 모든 시도를 접속자 IP 와 함께 로그(journal)에 남긴다.
+      if (route === 'POST /api/action') {
+        if (!sameOrigin(req)) return send(res, 403, { error: '허용되지 않은 요청 출처입니다' });
+        if (!/^application\/json/i.test(req.headers['content-type'] ?? '')) return send(res, 415, { error: 'JSON 요청이 필요합니다' });
+        let body;
+        try { body = await readJson(req); } catch { return send(res, 400, { error: '잘못된 요청' }); }
+        const { id, action } = body;
+        if (typeof id !== 'string' || typeof action !== 'string') return send(res, 400, { error: 'id 와 action 이 필요합니다' });
+        if (busy.has(id)) return send(res, 409, { error: '이 서비스는 이미 처리 중입니다' });
+
+        busy.add(id);
+        try {
+          const result = await collector.control(id, action);
+          console.log(`[action] ip=${clientIp(req)} service=${id} action=${action} -> ${result.ok ? 'ok' : `FAIL(${result.message})`}`);
+          if (!result.ok) return send(res, result.status ?? 500, { error: result.message });
+          await tick(); // 바뀐 상태가 화면에 바로 보이도록 즉시 다시 수집
+          return send(res, 200, { ok: true, message: result.message });
+        } finally {
+          busy.delete(id);
+        }
       }
 
       if (route === 'GET /api/logs') {

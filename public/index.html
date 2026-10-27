@@ -47,7 +47,7 @@
               <th scope="col" class="num hide-sm">가동</th>
               <th scope="col" class="num hide-sm">재시작</th>
               <th scope="col">점검</th>
-              <th scope="col"><span class="sr-only">로그</span></th>
+              <th scope="col"><span class="sr-only">작업</span></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -70,6 +70,21 @@
     <p id="log-error" class="error" role="alert"></p>
     <pre id="log-body" class="log-body" tabindex="0"></pre>
   </dialog>
+
+  <!-- 시작/중지/재시작 확인 창. form method="dialog": 누른 버튼의 value("ok"/"cancel")가 닫힐 때 returnValue 가 된다. -->
+  <dialog id="confirm-dialog" class="confirm-dialog">
+    <form method="dialog">
+      <p id="confirm-msg" class="confirm-msg"></p>
+      <p id="confirm-warn" class="muted"></p>
+      <div class="confirm-actions">
+        <button class="btn" value="cancel">취소</button>
+        <button id="confirm-ok" class="btn primary" value="ok">확인</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 동작 결과 알림(진행 중/성공/실패). 스크린리더가 읽도록 role="status" -->
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <!-- 차트에 마우스를 올렸을 때 값을 보여주는 공용 툴팁 -->
   <div id="tooltip" class="tooltip" role="tooltip" hidden></div>

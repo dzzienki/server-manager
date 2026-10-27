@@ -189,9 +189,90 @@ function renderServices(d) {
       h('td', { class: 'num hide-sm' }, fmtDur(sv.uptime)),
       h('td', { class: 'num hide-sm' }, sv.restarts ? String(sv.restarts) : '0'),
       h('td', {}, checksCell(sv)),
-      h('td', {}, h('button', { class: 'btn', type: 'button', onclick: () => openLog(sv) }, '로그')));
+      h('td', {}, h('div', { class: 'actions' },
+        h('button', { class: 'btn', type: 'button', onclick: () => openLog(sv) }, '로그'),
+        controlButtons(sv))));
   });
   $('#services tbody').replaceChildren(...rows);
+}
+
+// ---- 서비스 제어 (시작/중지/재시작) ----------------------------------------------
+let busyId = null;   // 동작이 진행 중인 서비스 id — 그 행의 버튼을 잠가 중복 클릭을 막는다
+let lastData = null; // 마지막으로 받은 데이터(버튼 잠금 상태를 바꿀 때 다시 그리는 데 쓴다)
+
+// 서비스 상태에 맞는 버튼만 보여준다. 서버가 허용한 동작(sv.actions)만 나타나며, 실제 허용 여부는 서버가 다시 검사한다.
+//   켜져 있음 → [재시작] [중지]   /   꺼져 있음 → [시작]  (start 가 허용되지 않고 restart 만 허용되면 [재시작]이 그 역할)
+function controlButtons(sv) {
+  const acts = sv.actions ?? [];
+  const running = sv.active === 'active' || sv.active === 'activating';
+  const defs = [];
+  if (running) {
+    if (acts.includes('restart')) defs.push(['restart', '재시작']);
+    if (acts.includes('stop')) defs.push(['stop', '중지']);
+  } else if (acts.includes('start')) {
+    defs.push(['start', '시작']);
+  } else if (acts.includes('restart')) {
+    defs.push(['restart', '시작']);
+  }
+  return defs.map(([action, label]) => h('button', {
+    class: `btn${action === 'stop' ? ' danger' : ''}`,
+    type: 'button',
+    disabled: busyId === sv.id,
+    onclick: () => confirmAndRun(sv, action, label),
+  }, label));
+}
+
+// 확인 창. 확인 버튼이면 true, 취소/Esc 면 false. (window.confirm 대신 <dialog> 를 써서 화면 스타일과 맞추고 브라우저 차단을 피한다)
+const confirmDlg = $('#confirm-dialog');
+function confirmDialog(message, warning, okLabel, danger) {
+  $('#confirm-msg').textContent = message;
+  $('#confirm-warn').textContent = warning;
+  const ok = $('#confirm-ok');
+  ok.textContent = okLabel;
+  ok.className = `btn ${danger ? 'danger-fill' : 'primary'}`;
+  confirmDlg.returnValue = '';
+  confirmDlg.showModal();
+  return new Promise((resolve) => {
+    confirmDlg.addEventListener('close', () => resolve(confirmDlg.returnValue === 'ok'), { once: true });
+  });
+}
+
+// 화면 아래 알림. kind: info(진행 중, 계속 표시) | ok | error (5초 뒤 사라짐)
+const toastEl = $('#toast');
+let toastTimer = null;
+function toast(message, kind = 'ok') {
+  clearTimeout(toastTimer);
+  toastEl.textContent = message;
+  toastEl.className = `toast ${kind}`;
+  toastEl.hidden = false;
+  if (kind !== 'info') toastTimer = setTimeout(() => { toastEl.hidden = true; }, 5000);
+}
+
+// 확인 → 서버에 요청 → 결과 알림 → 즉시 다시 갱신. 요청은 시간이 걸릴 수 있다(서비스 종료/시작 대기).
+async function confirmAndRun(sv, action, label) {
+  const warning = action === 'stop'
+    ? '중지하면 서비스가 내려가고, 다시 시작하기 전까지 접속할 수 없습니다.'
+    : label === '시작'
+      ? '서비스를 시작합니다.' // 꺼져 있는 서비스를 켜는 경우(restart 만 허용된 서비스 포함)
+      : `${sv.scope === 'system' ? '시스템 서비스입니다. ' : ''}재시작하는 동안 잠시 접속이 끊길 수 있습니다.`;
+  if (!(await confirmDialog(`${sv.label}을(를) ${label}할까요?`, warning, label, action === 'stop'))) return;
+
+  busyId = sv.id;
+  if (lastData) renderServices(lastData); // 버튼 잠금 반영
+  toast(`${sv.label} ${label} 중…`, 'info');
+  try {
+    const r = await api('./api/action', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: sv.id, action }),
+    });
+    toast(r.message, 'ok');
+  } catch (err) {
+    if (err instanceof AuthError) { busyId = null; showLogin(); return; }
+    toast(err.message, 'error');
+  }
+  busyId = null;
+  poll();
 }
 
 // ---- API / 폴링 -----------------------------------------------------------------
@@ -225,6 +306,7 @@ async function poll() {
     $('#demo-banner').hidden = !d.demo;
     $('#interval').textContent = `${Math.round(d.intervalMs / 1000)}초`;
     $('#updated').textContent = `갱신 ${fmtTime(d.ts)}`;
+    lastData = d;
     renderTiles(d);
     renderServices(d);
   } catch (err) {

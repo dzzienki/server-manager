@@ -40,7 +40,7 @@ body {
   margin: 0; background: var(--page); color: var(--ink);
   font: 14px/1.5 var(--font);
 }
-main, .top { max-width: 1120px; margin: 0 auto; padding-left: 16px; padding-right: 16px; }
+main, .top { max-width: 1280px; margin: 0 auto; padding-left: 16px; padding-right: 16px; }
 main { padding-bottom: 48px; }
 h1 { font-size: 18px; margin: 0; }
 h2 { font-size: 15px; margin: 0; }
@@ -144,6 +144,34 @@ td .unit { display: block; color: var(--ink-2); font-size: 12px; }
   background: var(--page); border: 1px solid var(--border);
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
 }
+
+/* ---- 제어 버튼 / 확인 창 / 알림 ---- */
+/* 버튼은 한 줄로 유지하고(줄바꿈하면 다른 열이 눌린다), 메모리 열의 그래프가 줄어들지 않게 고정한다 */
+.actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+.actions .btn { padding: 4px 10px; white-space: nowrap; }
+.mem span { white-space: nowrap; }
+.mem .spark { flex-shrink: 0; }
+td.num { white-space: nowrap; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.danger { border-color: var(--crit); }              /* 위험 동작은 테두리로 구분(글자색은 대비를 위해 그대로) */
+.btn.danger-fill { background: var(--crit); border-color: transparent; color: #fff; }
+.btn.danger-fill:hover { filter: brightness(1.08); }
+
+.confirm-dialog {
+  width: min(420px, calc(100vw - 24px));
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 12px; padding: 18px;
+}
+.confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+.confirm-msg { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+.confirm-dialog p { margin-top: 0; }
+.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 20;
+  max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 10px;
+  background: var(--ink); color: var(--page); font-size: 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.toast.error { background: var(--crit); color: #fff; }
 
 @media (max-width: 720px) {
   .hide-sm { display: none; }

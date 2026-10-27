@@ -12,6 +12,10 @@ import { promisify } from 'node:util';
 // 모든 외부 명령은 execFile(셸 미사용)로 부르고, 인자는 검증된 설정 값만 사용한다.
 const run = promisify(execFile);
 
+// sudo 로 부를 systemctl 의 절대 경로. sudoers 규칙도 이 경로로 만든다(scripts/gen-sudoers.js) — 둘이 일치해야 허용된다.
+const SYSTEMCTL_PATH = '/usr/bin/systemctl';
+const ACTION_LABEL = { start: '시작', stop: '중지', restart: '재시작' };
+
 // `systemctl show -p` 로 요청할 속성. 각각의 의미:
 //   LoadState  유닛 파일을 찾았는지(not-found 면 등록 안 된 유닛)
 //   ActiveState/SubState  active·failed·inactive / running·dead 등
@@ -224,6 +228,7 @@ export function createCollector(config, { exec = run } = {}) {
         unit: cfg.unit,
         port: cfg.port,
         hasLog: true,
+        actions: cfg.actions, // 화면이 어떤 버튼을 보여줄지 결정하는 데 쓴다(실제 허용 여부는 서버가 다시 검사)
         load: o?.LoadState ?? 'not-found',
         active: o?.ActiveState ?? 'inactive',
         sub: o?.SubState ?? '',
@@ -268,5 +273,30 @@ export function createCollector(config, { exec = run } = {}) {
     }
   }
 
-  return { sample, readLog };
+  // 서비스 제어(시작/중지/재시작). 반환: { ok, message, status? } — 던지지 않고 결과 객체로 알려준다.
+  //   user 유닛   : systemctl --user <동작> <유닛>   (이 프로세스와 같은 계정이라 권한 문제 없음)
+  //   system 유닛 : sudo -n systemctl <동작> <유닛>  (sudoers 에 "그 명령만" 허용해 둬야 함 → scripts/install-sudoers.sh)
+  // 서버 쪽 검사와 별개로 여기서도 id·동작을 services.json 허용 목록과 대조한다(방어를 한 겹 더).
+  async function control(id, action) {
+    const cfg = config.services.find((s) => s.id === id);
+    if (!cfg) return { ok: false, status: 404, message: '알 수 없는 서비스입니다' };
+    if (!cfg.actions.includes(action)) return { ok: false, status: 403, message: '이 서비스에는 허용되지 않은 동작입니다' };
+    const [cmd, args] = cfg.scope === 'user'
+      ? ['systemctl', ['--user', action, cfg.unit]]
+      : ['sudo', ['-n', SYSTEMCTL_PATH, action, cfg.unit]];
+    try {
+      await exec(cmd, args, { timeout: 90_000 }); // java 처럼 종료가 느린 서비스를 위해 넉넉히
+      return { ok: true, message: `${cfg.label} ${ACTION_LABEL[action]} 완료` };
+    } catch (err) {
+      const raw = `${err.stderr ?? ''}${err.message ?? ''}`.trim().split('\n')[0];
+      const noPerm = /password is required|not allowed|a terminal is required|may not run sudo/i.test(raw);
+      return {
+        ok: false,
+        status: 500,
+        message: noPerm ? '권한이 없습니다. sudoers 설정이 필요합니다(scripts/install-sudoers.sh)' : `${ACTION_LABEL[action]} 실패: ${raw}`,
+      };
+    }
+  }
+
+  return { sample, readLog, control };
 }

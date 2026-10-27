@@ -4,6 +4,8 @@ const MB = 2 ** 20;
 
 export function createDemoCollector(config) {
   let tick = 0;
+  const off = new Set(['valkey']); // 꺼져 있는 서비스(제어 버튼으로 켜고 끌 수 있다)
+  const LABEL = { start: '시작', stop: '중지', restart: '재시작' };
   const walk = (base, amp, phase) => Math.max(0, base + amp * Math.sin(tick / 6 + phase) + (Math.random() - 0.5) * amp * 0.4);
 
   async function sample() {
@@ -11,7 +13,7 @@ export function createDemoCollector(config) {
     const total = 13 * GB;
     const used = walk(4.1 * GB, 0.3 * GB, 1);
     const services = config.services.map((cfg, i) => {
-      const down = cfg.id === 'valkey';
+      const down = off.has(cfg.id);
       const warn = cfg.id === 'mome';
       const base = [180, 65, 210, 140, 850, 320, 12, 8, 48][i % 9] * MB;
       const active = down ? 'failed' : 'active';
@@ -21,7 +23,7 @@ export function createDemoCollector(config) {
         if (cfg.http) checks.http = { status: warn ? 502 : cfg.http === '/' ? 404 : 200, ms: Math.round(walk(18, 10, i)) };
       }
       const svc = {
-        id: cfg.id, label: cfg.label, scope: cfg.scope, unit: cfg.unit, port: cfg.port, hasLog: true,
+        id: cfg.id, label: cfg.label, scope: cfg.scope, unit: cfg.unit, port: cfg.port, hasLog: true, actions: cfg.actions,
         load: 'loaded', active, sub: down ? 'failed' : 'running', result: down ? 'exit-code' : 'success',
         pid: down ? null : 1000 + i * 111,
         memory: down ? null : walk(base, base * 0.04, i),
@@ -55,5 +57,15 @@ export function createDemoCollector(config) {
     return { source: `demo (${cfg.unit})`, lines };
   }
 
-  return { sample, readLog };
+  // 실제 수집기와 같은 규칙으로 검사하고, 상태만 메모리에서 바꾼다(진짜 서비스는 건드리지 않는다).
+  async function control(id, action) {
+    const cfg = config.services.find((s) => s.id === id);
+    if (!cfg) return { ok: false, status: 404, message: '알 수 없는 서비스입니다' };
+    if (!cfg.actions.includes(action)) return { ok: false, status: 403, message: '이 서비스에는 허용되지 않은 동작입니다' };
+    await new Promise((r) => setTimeout(r, 600)); // 실제처럼 잠깐 걸린다
+    if (action === 'stop') off.add(id); else off.delete(id);
+    return { ok: true, message: `${cfg.label} ${LABEL[action]} 완료` };
+  }
+
+  return { sample, readLog, control };
 }

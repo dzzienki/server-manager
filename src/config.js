@@ -7,6 +7,8 @@ import path from 'node:path';
 
 // 프로젝트 루트(public/, services.json 위치 기준)
 const ROOT = path.resolve(import.meta.dirname, '..');
+// 화면에서 실행할 수 있는 제어 동작(허용 목록). 서비스마다 이 중 일부만 services.json 의 actions 로 열어준다.
+export const ACTIONS = ['start', 'stop', 'restart'];
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 // 유닛 이름은 execFile 인자로 들어가므로 '-' 로 시작(옵션 주입)하거나 특수문자를 가진 값은 거부한다.
 const UNIT_RE = /^[A-Za-z0-9][A-Za-z0-9@._-]*$/;
@@ -17,6 +19,7 @@ const expandHome = (p) => (p.startsWith('~/') ? path.join(os.homedir(), p.slice(
 // services.json 의 각 항목을 검증하고 기본값을 채워 정규화한다.
 //   id: 화면/API 식별자 · scope: user(systemctl --user)|system · unit: systemd 유닛 이름
 //   port: 있으면 TCP 점검 · http: 있으면 그 경로로 GET 점검(port 필요) · logFile: 있으면 journal 대신 파일 tail
+//   actions: 화면에서 허용할 제어 동작(start/stop/restart 중). 없으면 읽기 전용
 export function validateServices(list) {
   if (!Array.isArray(list) || list.length === 0) throw new Error('services 는 비어 있지 않은 배열이어야 합니다');
   const seen = new Set();
@@ -31,6 +34,9 @@ export function validateServices(list) {
     if (s.http != null && !(typeof s.http === 'string' && s.http.startsWith('/') && s.port != null)) {
       throw new Error(`${at}.http 는 '/' 로 시작해야 하고 port 가 필요합니다`);
     }
+    if (s.actions != null && !(Array.isArray(s.actions) && s.actions.every((a) => ACTIONS.includes(a)))) {
+      throw new Error(`${at}.actions 는 ${ACTIONS.join('|')} 중에서 고른 배열이어야 합니다`);
+    }
     return {
       id: s.id,
       label: s.label ?? s.id,
@@ -38,6 +44,8 @@ export function validateServices(list) {
       unit: s.unit,
       port: s.port ?? null,
       http: s.http ?? null,
+      // 허용할 제어 동작. 지정하지 않으면 빈 배열 = 읽기 전용(안전한 기본값).
+      actions: [...new Set(s.actions ?? [])],
       logFile: s.logFile ? expandHome(String(s.logFile)) : null,
     };
   });

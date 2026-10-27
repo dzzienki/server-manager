@@ -1,11 +1,11 @@
 [
-  { "id": "fconline", "label": "FC Online", "scope": "user", "unit": "fconline.service", "port": 8001, "http": "/", "logFile": "~/projects/fconline/app.log" },
-  { "id": "mytree", "label": "mytree", "scope": "user", "unit": "mytree.service", "port": 3100, "http": "/" },
-  { "id": "mayhemdex-web", "label": "mayhemdex 웹", "scope": "user", "unit": "mayhemdex-web.service", "port": 3000, "http": "/mayhemdex", "logFile": "/tmp/mayhemdex-web.log" },
-  { "id": "mayhemdex-crawl", "label": "mayhemdex 크롤러", "scope": "user", "unit": "mayhemdex-crawl.service", "logFile": "/tmp/mayhemdex-crawl.log" },
-  { "id": "mome", "label": "mome 백엔드", "scope": "system", "unit": "mome-backend.service", "port": 8080, "http": "/" },
-  { "id": "household-ledger", "label": "가계부 백엔드", "scope": "system", "unit": "household-ledger-backend.service", "port": 8000, "http": "/api/health" },
+  { "id": "fconline", "label": "FC Online", "scope": "user", "unit": "fconline.service", "port": 8001, "http": "/", "logFile": "~/projects/fconline/app.log", "actions": ["start", "stop", "restart"] },
+  { "id": "mytree", "label": "mytree", "scope": "user", "unit": "mytree.service", "port": 3100, "http": "/", "actions": ["start", "stop", "restart"] },
+  { "id": "mayhemdex-web", "label": "mayhemdex 웹", "scope": "user", "unit": "mayhemdex-web.service", "port": 3000, "http": "/mayhemdex", "logFile": "/tmp/mayhemdex-web.log", "actions": ["start", "stop", "restart"] },
+  { "id": "mayhemdex-crawl", "label": "mayhemdex 크롤러", "scope": "user", "unit": "mayhemdex-crawl.service", "logFile": "/tmp/mayhemdex-crawl.log", "actions": ["start", "stop", "restart"] },
+  { "id": "mome", "label": "mome 백엔드", "scope": "system", "unit": "mome-backend.service", "port": 8080, "http": "/", "actions": ["start", "stop", "restart"] },
+  { "id": "household-ledger", "label": "가계부 백엔드", "scope": "system", "unit": "household-ledger-backend.service", "port": 8000, "http": "/api/health", "actions": ["start", "stop", "restart"] },
   { "id": "nginx", "label": "nginx", "scope": "system", "unit": "nginx.service", "port": 443 },
-  { "id": "valkey", "label": "valkey", "scope": "system", "unit": "valkey.service", "port": 6379 },
+  { "id": "valkey", "label": "valkey", "scope": "system", "unit": "valkey.service", "port": 6379, "actions": ["restart"] },
   { "id": "server-manager", "label": "server-manager", "scope": "user", "unit": "server-manager.service", "port": 3200 }
 ]
