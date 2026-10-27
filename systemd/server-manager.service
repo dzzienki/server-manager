@@ -1,0 +1,15 @@
+# systemd 사용자 유닛 템플릿 — scripts/deploy.sh 가 @값@ 을 채워 ~/.config/systemd/user/server-manager.service 로 설치한다.
+[Unit]
+Description=server-manager (service dashboard)
+After=network.target
+
+[Service]
+WorkingDirectory=@DIR@
+Environment=PATH=@NODE_BIN@:/usr/local/bin:/usr/bin
+# 의존성이 없는 단일 프로세스. 힙을 제한해 서버 메모리를 아낀다.
+ExecStart=@NODE_BIN@/node --max-old-space-size=64 --env-file=@DIR@/.env @DIR@/src/main.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
