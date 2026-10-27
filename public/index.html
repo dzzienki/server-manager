@@ -53,7 +53,21 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="foot">값은 서버에서 <span id="interval"></span>마다 수집합니다. 차트는 최근 1시간(서버 재시작 시 초기화)입니다.</p>
+      <h2 class="section">최근 기록 <small id="events-note" class="muted"></small></h2>
+      <div class="card table-wrap">
+        <table id="events">
+          <thead>
+            <tr>
+              <th scope="col">시각</th>
+              <th scope="col">구분</th>
+              <th scope="col">내용</th>
+              <th scope="col">접속 IP</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="foot">값은 서버에서 <span id="interval"></span>마다 수집합니다. 차트와 최근 기록은 서버 재시작 시 초기화됩니다(차트는 최근 1시간).</p>
     </section>
   </main>
 

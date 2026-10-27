@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
+import tls from 'node:tls';
 import { promisify } from 'node:util';
 
 // 서버 상태 수집. 세 부분으로 나뉜다.
@@ -75,6 +76,11 @@ export function cpuPercent(a, b) {
   return Math.max(0, Math.min(100, 100 * (1 - (b.idle - a.idle) / dt)));
 }
 
+// 인증서 만료까지 남은 일수(내림). 이미 만료됐으면 음수.
+export function certDaysLeft(validToMs, now = Date.now()) {
+  return Math.floor((validToMs - now) / 86_400_000);
+}
+
 // 서비스 한 줄의 종합 상태: ok | warn | down | unknown
 //   unknown  유닛이 등록되어 있지 않음(이름 오타나 미설치)
 //   warn     시작/재로드 중이거나, 켜져 있는데 포트·HTTP 점검이 실패
@@ -137,6 +143,21 @@ function httpCheck(port, path, timeout = 2000) {
   });
 }
 
+// 이 서버의 HTTPS(443) 인증서 만료 시각을 읽는다. 로컬 nginx 에 SNI(host)로 접속해 인증서만 확인하고 바로 끊는다.
+// 검증은 하지 않는다(rejectUnauthorized:false) — 만료 직전·만료된 인증서도 날짜를 읽어야 하기 때문. 실패하면 null.
+export function certCheck(host, port = 443, timeout = 3000) {
+  return new Promise((resolve) => {
+    const sock = tls.connect({ host: '127.0.0.1', port, servername: host, rejectUnauthorized: false });
+    const done = (v) => { sock.destroy(); resolve(v); };
+    sock.setTimeout(timeout, () => done(null));
+    sock.once('error', () => done(null));
+    sock.once('secureConnect', () => {
+      const validTo = Date.parse(sock.getPeerCertificate()?.valid_to ?? '');
+      done(Number.isFinite(validTo) ? { host, validTo } : null);
+    });
+  });
+}
+
 // 파일의 마지막 n 줄. 큰 로그를 통째로 읽지 않도록 끝에서 maxBytes 만 읽는다.
 async function tailFile(file, n, maxBytes = 256 * 1024) {
   const fh = await fs.open(file, 'r');
@@ -167,6 +188,18 @@ export function createCollector(config, { exec = run } = {}) {
   let prevCpu = readCpu();
   const prevSvc = new Map(); // 서비스별 직전 누적 CPU: id -> { ns(나노초), t(측정 시각 ms) }
 
+  // 인증서 만료일은 거의 안 바뀌므로 1시간에 한 번만 확인한다(실패하면 5분 뒤 재시도, 그동안은 직전 값을 유지).
+  // config.tlsHost 가 없으면 점검하지 않는다.
+  let certCache = null; let certAt = 0;
+  async function cert() {
+    if (!config.tlsHost) return null;
+    const now = Date.now();
+    if (now - certAt < (certCache ? 3_600_000 : 300_000)) return certCache;
+    certAt = now;
+    certCache = (await certCheck(config.tlsHost)) ?? certCache;
+    return certCache;
+  }
+
   // 서버 전체: CPU·메모리·디스크·부하·가동 시간
   async function system() {
     const cur = readCpu();
@@ -185,7 +218,7 @@ export function createCollector(config, { exec = run } = {}) {
       disks = parseDf(stdout);
     } catch { /* 일부 마운트가 없으면 df 가 실패 — 디스크 표시만 생략 */ }
 
-    return { cpu, cores: os.cpus().length, load: os.loadavg(), uptime: os.uptime(), mem, disks };
+    return { cpu, cores: os.cpus().length, load: os.loadavg(), uptime: os.uptime(), mem, disks, cert: await cert() };
   }
 
   // 서비스별: systemd 상태 + 포트/HTTP 점검을 합쳐 한 줄씩 만든다.

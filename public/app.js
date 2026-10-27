@@ -114,7 +114,7 @@ function meter(pct) {
 }
 
 // ---- 렌더 ---------------------------------------------------------------------
-// 위쪽 서버 전체 타일 4개(CPU / 메모리 / 디스크 / 가동 시간)를 다시 그린다.
+// 위쪽 서버 전체 타일(CPU / 메모리 / 디스크 / 가동 시간 / HTTPS 인증서)을 다시 그린다.
 // 메모리 사용량 = 전체 - "사용 가능(available)" (캐시로 쓰는 메모리는 사용 중으로 치지 않는다).
 function renderTiles(d) {
   const { system: sys, history: hist } = d;
@@ -149,12 +149,23 @@ function renderTiles(d) {
     h('div', { class: 'label' }, '서버 가동 시간'),
     h('div', { class: 'value' }, fmtDur(sys.uptime)));
 
-  $('#tiles').replaceChildren(cpu, mem, disk, up);
+  // HTTPS 인증서: 만료까지 남은 일수. 14일 미만이면 경고, 7일 미만이면 위험 — 색과 함께 문구도 바꾼다.
+  let certTile = null;
+  if (sys.cert) {
+    const days = Math.floor((sys.cert.validTo - d.ts) / 86_400_000);
+    const note = days < 0 ? '만료되었습니다' : days < 7 ? '갱신이 급합니다' : days < 14 ? '갱신 확인 필요' : '정상';
+    certTile = h('article', { class: 'tile card' },
+      h('div', { class: 'label' }, 'HTTPS 인증서'),
+      h('div', { class: 'value' }, days < 0 ? '만료' : `${days}일`, h('small', {}, ' 남음')),
+      h('div', { class: 'sub' }, `${note} · ${new Date(sys.cert.validTo).toLocaleDateString('ko-KR')} 만료 · ${sys.cert.host}`));
+  }
+
+  $('#tiles').replaceChildren(cpu, mem, disk, up, ...(certTile ? [certTile] : []));
 }
 
 // "점검" 열: 포트 열림 여부와 HTTP 응답. 문제가 있는 항목은 굵게(.bad) 표시한다.
 // 서버가 점검하지 않은 항목(꺼진 서비스 등)은 '—'.
-function checksCell(svc) {
+function checksCell(svc, hist) {
   const c = svc.checks;
   const items = [];
   if (svc.port != null) {
@@ -164,6 +175,8 @@ function checksCell(svc) {
   if (c.http) {
     const bad = c.http.status === 0 || c.http.status >= 500;
     items.push(h('span', { class: bad ? 'bad' : '' }, c.http.status === 0 ? 'HTTP 무응답' : `HTTP ${c.http.status} · ${c.http.ms}ms`));
+    // 최근 응답 시간 추이. 값이 작을 때 작은 흔들림이 크게 보이지 않도록 최소 눈금을 50ms 로 둔다.
+    items.push(spark({ values: hist.svcMs?.[svc.id] ?? [], times: hist.t, fmt: (v) => `${svc.label} 응답 ${v}ms`, label: `${svc.label} 응답 시간 추이`, w: 70, hgt: 22, minTop: 50 }));
   }
   if (!items.length) items.push(h('span', {}, '—'));
   return h('div', { class: 'checks' }, items);
@@ -188,12 +201,29 @@ function renderServices(d) {
       h('td', { class: 'num hide-sm' }, fmtPct(sv.cpu)),
       h('td', { class: 'num hide-sm' }, fmtDur(sv.uptime)),
       h('td', { class: 'num hide-sm' }, sv.restarts ? String(sv.restarts) : '0'),
-      h('td', {}, checksCell(sv)),
+      h('td', {}, checksCell(sv, hist)),
       h('td', {}, h('div', { class: 'actions' },
         h('button', { class: 'btn', type: 'button', onclick: () => openLog(sv) }, '로그'),
         controlButtons(sv))));
   });
   $('#services tbody').replaceChildren(...rows);
+}
+
+// 최근 기록 표: 로그인 성공/실패와 서비스 제어. 실패는 굵게 + "실패" 글자로 표시한다(색만으로 구분하지 않음).
+// 제목 옆에는 기록에 남아 있는 로그인 실패 횟수(같은 IP 연속 실패는 한 줄로 합쳐져 있어 count 를 더한다)를 보여준다.
+const fmtDateTime = (ms) => new Date(ms).toLocaleString('ko-KR', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function renderEvents(d) {
+  const ev = d.events ?? [];
+  const fails = ev.filter((e) => e.type === 'login' && !e.ok).reduce((n, e) => n + e.count, 0);
+  $('#events-note').textContent = fails ? `로그인 실패 ${fails}회` : '';
+  const rows = ev.length
+    ? ev.map((e) => h('tr', {},
+      h('td', { class: 'nowrap' }, fmtDateTime(e.ts)),
+      h('td', {}, e.type === 'login' ? '로그인' : '제어'),
+      h('td', { class: e.ok ? '' : 'fail' }, e.count > 1 ? `${e.text} ×${e.count}` : e.text),
+      h('td', {}, e.ip)))
+    : [h('tr', {}, h('td', { colspan: 4, class: 'muted' }, '아직 기록이 없습니다'))];
+  $('#events tbody').replaceChildren(...rows);
 }
 
 // ---- 서비스 제어 (시작/중지/재시작) ----------------------------------------------
@@ -309,6 +339,7 @@ async function poll() {
     lastData = d;
     renderTiles(d);
     renderServices(d);
+    renderEvents(d);
   } catch (err) {
     if (err instanceof AuthError) { showLogin(); return; }
     $('#updated').textContent = `갱신 실패: ${err.message}`;

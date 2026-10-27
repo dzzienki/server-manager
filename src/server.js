@@ -1,6 +1,6 @@
 // HTTP 서버: 정적 화면 제공 + 로그인/조회 API.
 //   POST /api/login, /api/logout   세션 쿠키 발급·삭제 (로그인 필요 없음)
-//   GET  /api/overview             최신 샘플 + 최근 이력 (로그인 필요)
+//   GET  /api/overview             최신 샘플 + 최근 이력 + 최근 기록(로그인/제어) (로그인 필요)
 //   GET  /api/logs?id=&n=          서비스 로그 (로그인 필요)
 // 수집은 요청과 무관하게 주기적으로 돌며 결과를 캐시해 두고, API 는 캐시만 돌려준다
 // → 접속자가 많아도 systemctl 호출 횟수는 늘지 않는다.
@@ -9,6 +9,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { makeAuth, makeLimiter } from './auth.js';
+import { createEvents } from './events.js';
 import { createHistory } from './history.js';
 
 const COOKIE = 'sm_session';
@@ -63,6 +64,7 @@ export function createApp({ config, collector }) {
   const auth = makeAuth({ password: config.password, secret: config.secret });
   const limiter = makeLimiter();
   const history = createHistory(config.services.map((s) => s.id));
+  const events = createEvents(); // 화면의 "최근 기록"
   const publicDir = path.join(config.root, 'public');
   let latest = null; // 가장 최근 샘플(API 가 이것만 돌려준다)
   let timer = null;
@@ -131,14 +133,21 @@ export function createApp({ config, collector }) {
     if (route === 'POST /api/login') {
       const ip = clientIp(req);
       const wait = limiter.blockedFor(ip);
-      if (wait) return send(res, 429, { error: `시도가 너무 많습니다. ${wait}초 후 다시 시도하세요` }, { 'retry-after': String(wait) });
+      if (wait) {
+        events.add({ type: 'login', ok: false, ip, text: '로그인 잠김 — 시도 차단' });
+        return send(res, 429, { error: `시도가 너무 많습니다. ${wait}초 후 다시 시도하세요` }, { 'retry-after': String(wait) });
+      }
       let body;
       try { body = await readJson(req); } catch { return send(res, 400, { error: '잘못된 요청' }); }
       if (typeof body.password !== 'string' || !auth.checkPassword(body.password)) {
         limiter.fail(ip);
+        events.add({ type: 'login', ok: false, ip, text: '로그인 실패' });
+        console.log(`[login] ip=${ip} result=FAIL`);
         return send(res, 401, { error: '비밀번호가 맞지 않습니다' });
       }
       limiter.reset(ip);
+      events.add({ type: 'login', ok: true, ip, text: '로그인 성공' });
+      console.log(`[login] ip=${ip} result=ok`);
       return send(res, 200, { ok: true }, { 'set-cookie': sessionCookie(req, auth.issue(), Math.floor(auth.ttlMs / 1000)) });
     }
 
@@ -155,7 +164,7 @@ export function createApp({ config, collector }) {
         if (!latest) return send(res, 503, { error: '수집 중입니다' });
         return send(res, 200, {
           host: os.hostname(), demo: config.demo, intervalMs: config.intervalMs,
-          ts: latest.ts, system: latest.system, services: latest.services, history: history.toJSON(),
+          ts: latest.ts, system: latest.system, services: latest.services, history: history.toJSON(), events: events.toJSON(),
         });
       }
 
@@ -173,7 +182,9 @@ export function createApp({ config, collector }) {
         busy.add(id);
         try {
           const result = await collector.control(id, action);
-          console.log(`[action] ip=${clientIp(req)} service=${id} action=${action} -> ${result.ok ? 'ok' : `FAIL(${result.message})`}`);
+          const ip = clientIp(req);
+          console.log(`[action] ip=${ip} service=${id} action=${action} -> ${result.ok ? 'ok' : `FAIL(${result.message})`}`);
+          events.add({ type: 'action', ok: result.ok, ip, text: result.ok ? result.message : `${id} ${action}: ${result.message}`.slice(0, 200) });
           if (!result.ok) return send(res, result.status ?? 500, { error: result.message });
           await tick(); // 바뀐 상태가 화면에 바로 보이도록 즉시 다시 수집
           return send(res, 200, { ok: true, message: result.message });

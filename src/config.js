@@ -65,6 +65,8 @@ export function loadConfig(env = process.env) {
     // nginx 뒤에서만 1: X-Forwarded-For/Proto 를 믿는다. 직접 노출 상태에서 켜면 IP 위조가 가능하므로 금지.
     trustProxy: env.SM_TRUST_PROXY === '1',
     intervalMs: Math.max(2000, Number(env.SM_INTERVAL_MS || 10000)), // 너무 짧게 잡아 systemctl 을 과하게 부르지 않도록 하한 2초
+    // HTTPS 인증서 만료일을 볼 도메인(nginx 가 같은 서버 443 에서 서비스하는 이름). 비우면 점검 안 함.
+    tlsHost: env.SM_TLS_HOST || '',
     disks: (env.SM_DISKS || '/').split(',').map((d) => d.trim()).filter(Boolean),
     services,
   };

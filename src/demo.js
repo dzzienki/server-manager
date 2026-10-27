@@ -42,6 +42,7 @@ export function createDemoCollector(config) {
         cpu: Math.min(100, walk(14, 9, 0)), cores: 8, load: [0.42, 0.38, 0.31], uptime: 86400 * 41 + tick * 10,
         mem: { total, available: total - used, swapTotal: 4 * GB, swapFree: 4 * GB - 0.2 * GB },
         disks: [{ mount: '/', total: 100 * GB, used: 62 * GB }, { mount: '/home', total: 400 * GB, used: 352 * GB }],
+        cert: { host: 'demo.example.com', validTo: Date.now() + 11 * 86_400_000 }, // 경고 색 확인용으로 11일 남김
       },
     };
   }

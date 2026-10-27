@@ -129,6 +129,10 @@ td .name { font-weight: 600; }
 td .unit { display: block; color: var(--ink-2); font-size: 12px; }
 .checks { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--ink-2); font-size: 13px; }
 .checks .bad { color: var(--ink); font-weight: 600; }
+.checks .spark { flex-shrink: 0; }
+.section small { font-size: 12px; font-weight: 400; margin-left: 8px; }
+td.fail { font-weight: 600; }
+td.nowrap { white-space: nowrap; }
 .foot { color: var(--ink-2); font-size: 12px; margin-top: 10px; }
 
 /* ---- 로그 ---- */
