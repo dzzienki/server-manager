@@ -280,7 +280,9 @@ function toast(message, kind = 'ok') {
 
 // 확인 → 서버에 요청 → 결과 알림 → 즉시 다시 갱신. 요청은 시간이 걸릴 수 있다(서비스 종료/시작 대기).
 async function confirmAndRun(sv, action, label) {
-  const warning = action === 'stop'
+  const warning = sv.self
+    ? '대시보드가 재시작됩니다. 몇 초 동안 화면이 끊기고, 로그인이 풀릴 수 있습니다.'
+    : action === 'stop'
     ? '중지하면 서비스가 내려가고, 다시 시작하기 전까지 접속할 수 없습니다.'
     : label === '시작'
       ? '서비스를 시작합니다.' // 꺼져 있는 서비스를 켜는 경우(restart 만 허용된 서비스 포함)

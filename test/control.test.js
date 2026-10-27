@@ -121,3 +121,24 @@ test('action: 같은 서비스에 동작이 겹치면 409', async () => {
   const [a, b] = await Promise.all([act({ id: 'web', action: 'restart' }), act({ id: 'web', action: 'restart' })]);
   assert.deepEqual([a.status, b.status].sort(), [200, 409]);
 });
+
+// ---- 자기 자신(self) 재시작 -----------------------------------------------------------
+
+test('config: self 서비스는 restart 만 허용할 수 있다', () => {
+  const me = { id: 'me', scope: 'user', unit: 'me.service', self: true };
+  assert.equal(validateServices([{ ...me, actions: ['restart'] }])[0].self, true);
+  assert.throws(() => validateServices([{ ...me, actions: ['stop'] }]), /self/);
+  assert.throws(() => validateServices([{ ...me, actions: ['start', 'restart'] }]), /self/);
+  assert.equal(validateServices([{ id: 'x', scope: 'user', unit: 'x.service' }])[0].self, false);
+});
+
+test('control: self 재시작은 응답을 먼저 돌려주고, 잠시 뒤 --no-block 으로 실행', async () => {
+  const me = validateServices([{ id: 'me', scope: 'user', unit: 'me.service', self: true, actions: ['restart'] }]);
+  const calls = [];
+  const c = createCollector({ services: me, disks: ['/'] }, { exec: async (cmd, args) => { calls.push([cmd, args]); return { stdout: '' }; } });
+  const r = await c.control('me', 'restart');
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 0); // 응답 시점에는 아직 실행하지 않았다
+  await new Promise((res) => setTimeout(res, 1000));
+  assert.deepEqual(calls, [['systemctl', ['--user', '--no-block', 'restart', 'me.service']]]);
+});

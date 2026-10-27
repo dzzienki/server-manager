@@ -20,6 +20,7 @@ const expandHome = (p) => (p.startsWith('~/') ? path.join(os.homedir(), p.slice(
 //   id: 화면/API 식별자 · scope: user(systemctl --user)|system · unit: systemd 유닛 이름
 //   port: 있으면 TCP 점검 · http: 있으면 그 경로로 GET 점검(port 필요) · logFile: 있으면 journal 대신 파일 tail
 //   actions: 화면에서 허용할 제어 동작(start/stop/restart 중). 없으면 읽기 전용
+//   self: true 면 이 대시보드 자신. 재시작만 허용한다(중지하면 화면에서 다시 켤 방법이 없고, 시작은 의미가 없다)
 export function validateServices(list) {
   if (!Array.isArray(list) || list.length === 0) throw new Error('services 는 비어 있지 않은 배열이어야 합니다');
   const seen = new Set();
@@ -37,6 +38,8 @@ export function validateServices(list) {
     if (s.actions != null && !(Array.isArray(s.actions) && s.actions.every((a) => ACTIONS.includes(a)))) {
       throw new Error(`${at}.actions 는 ${ACTIONS.join('|')} 중에서 고른 배열이어야 합니다`);
     }
+    if (s.self != null && typeof s.self !== 'boolean') throw new Error(`${at}.self 는 true/false`);
+    if (s.self && !(s.actions ?? []).every((a) => a === 'restart')) throw new Error(`${at}: self 서비스는 restart 만 허용할 수 있습니다`);
     return {
       id: s.id,
       label: s.label ?? s.id,
@@ -46,6 +49,7 @@ export function validateServices(list) {
       http: s.http ?? null,
       // 허용할 제어 동작. 지정하지 않으면 빈 배열 = 읽기 전용(안전한 기본값).
       actions: [...new Set(s.actions ?? [])],
+      self: s.self === true,
       logFile: s.logFile ? expandHome(String(s.logFile)) : null,
     };
   });

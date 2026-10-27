@@ -261,6 +261,7 @@ export function createCollector(config, { exec = run } = {}) {
         unit: cfg.unit,
         port: cfg.port,
         hasLog: true,
+        self: cfg.self, // 이 대시보드 자신(재시작 시 화면이 잠시 끊긴다고 안내하는 데 쓴다)
         actions: cfg.actions, // 화면이 어떤 버튼을 보여줄지 결정하는 데 쓴다(실제 허용 여부는 서버가 다시 검사)
         load: o?.LoadState ?? 'not-found',
         active: o?.ActiveState ?? 'inactive',
@@ -317,6 +318,13 @@ export function createCollector(config, { exec = run } = {}) {
     const [cmd, args] = cfg.scope === 'user'
       ? ['systemctl', ['--user', action, cfg.unit]]
       : ['sudo', ['-n', SYSTEMCTL_PATH, action, cfg.unit]];
+    // 자기 자신 재시작: 바로 실행하면 이 프로세스가 죽어 요청에 답하지 못한다. --no-block 으로 systemd 에 예약만 하고,
+    // 응답이 나간 뒤(0.8초 후) 실행한다. SM_SECRET 이 없으면 재시작 때 로그인이 풀린다(.env.example 참고).
+    if (cfg.self) {
+      const t = setTimeout(() => { exec(cmd, ['--user', '--no-block', action, cfg.unit], { timeout: 10_000 }).catch(() => {}); }, 800);
+      t.unref?.();
+      return { ok: true, message: `${cfg.label} 재시작을 시작했습니다. 몇 초 뒤 자동으로 다시 연결됩니다` };
+    }
     try {
       await exec(cmd, args, { timeout: 90_000 }); // java 처럼 종료가 느린 서비스를 위해 넉넉히
       return { ok: true, message: `${cfg.label} ${ACTION_LABEL[action]} 완료` };

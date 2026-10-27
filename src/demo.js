@@ -23,7 +23,7 @@ export function createDemoCollector(config) {
         if (cfg.http) checks.http = { status: warn ? 502 : cfg.http === '/' ? 404 : 200, ms: Math.round(walk(18, 10, i)) };
       }
       const svc = {
-        id: cfg.id, label: cfg.label, scope: cfg.scope, unit: cfg.unit, port: cfg.port, hasLog: true, actions: cfg.actions,
+        id: cfg.id, label: cfg.label, scope: cfg.scope, unit: cfg.unit, port: cfg.port, hasLog: true, actions: cfg.actions, self: cfg.self,
         load: 'loaded', active, sub: down ? 'failed' : 'running', result: down ? 'exit-code' : 'success',
         pid: down ? null : 1000 + i * 111,
         memory: down ? null : walk(base, base * 0.04, i),

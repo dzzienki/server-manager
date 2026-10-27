@@ -57,7 +57,8 @@ ssh -p <ssh포트> -L 3200:localhost:3200 mjchoi@<서버>     # 그 상태에서
   ```
   규칙은 `/usr/bin/systemctl restart mome-backend.service` 처럼 **정확히 그 명령만** 허용한다(와일드카드 없음).
   `actions` 를 바꾸면 이 스크립트를 다시 실행한다. 설치 전 규칙은 `node scripts/gen-sudoers.js <사용자>` 로 미리 볼 수 있다.
-- 기본으로 제어를 막아 둔 것: `nginx`(설정 오류 시 사이트 전체가 내려감), `server-manager`(자기 자신).
+- 기본으로 제어를 막아 둔 것: `nginx`(설정 오류 시 사이트 전체가 내려감).
+- `server-manager`(자기 자신)는 `"self": true` + `"actions": ["restart"]` 로 **재시작만** 열어 둔다(중지하면 화면에서 다시 켤 수 없다). 응답을 먼저 보낸 뒤 재시작하므로 화면이 몇 초 끊기고, `.env` 에 `SM_SECRET` 이 없으면 로그인이 풀린다.
 - 빌드/배포는 하지 않는다. 코드 반영은 각 프로젝트의 배포 스크립트로 하고, 여기서는 프로세스만 다룬다.
 - 모든 시도는 접속자 IP 와 함께 journal 에 남는다: `journalctl --user -u server-manager | grep '\[action\]'`
 
